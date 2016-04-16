@@ -18,6 +18,7 @@ package com.example.android.fingerprintdialog;
 
 import android.app.Activity;
 import android.app.DialogFragment;
+import android.content.Context;
 import android.content.SharedPreferences;
 import android.hardware.fingerprint.FingerprintManager;
 import android.os.Bundle;
@@ -32,8 +33,6 @@ import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.ImageView;
 import android.widget.TextView;
-
-import javax.inject.Inject;
 
 /**
  * A dialog which uses fingerprint APIs to authenticate the user, and falls back to password
@@ -57,16 +56,24 @@ public class FingerprintAuthenticationDialogFragment extends DialogFragment
     private FingerprintUiHelper mFingerprintUiHelper;
     private MainActivity mActivity;
 
-    @Inject FingerprintUiHelper.FingerprintUiHelperBuilder mFingerprintUiHelperBuilder;
-    @Inject InputMethodManager mInputMethodManager;
-    @Inject SharedPreferences mSharedPreferences;
+     FingerprintUiHelper.FingerprintUiHelperBuilder mFingerprintUiHelperBuilder;
+     InputMethodManager mInputMethodManager;
+     SharedPreferences mSharedPreferences;
+    private FingerprintManager fingerprintManager;
 
-    @Inject
-    public FingerprintAuthenticationDialogFragment() {}
+
+    public FingerprintAuthenticationDialogFragment() {
+    }
+
+    public void setFingerprintManager(FingerprintManager fingerprintManager){
+        this.fingerprintManager = fingerprintManager;
+    }
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+
+        mInputMethodManager = (InputMethodManager) getActivity().getSystemService(Context.INPUT_METHOD_SERVICE);
 
         // Do not create a new Fragment when the Activity is re-created such as orientation changes.
         setRetainInstance(true);
@@ -106,7 +113,7 @@ public class FingerprintAuthenticationDialogFragment extends DialogFragment
                 v.findViewById(R.id.use_fingerprint_in_future_check);
         mNewFingerprintEnrolledTextView = (TextView)
                 v.findViewById(R.id.new_fingerprint_enrolled_description);
-        mFingerprintUiHelper = mFingerprintUiHelperBuilder.build(
+        mFingerprintUiHelper = FingerprintUiHelper.FingerprintUiHelperBuilder.build(fingerprintManager,
                 (ImageView) v.findViewById(R.id.fingerprint_icon),
                 (TextView) v.findViewById(R.id.fingerprint_status), this);
         updateStage();
