@@ -18,10 +18,10 @@ package com.example.android.fingerprintdialog;
 
 import android.hardware.fingerprint.FingerprintManager;
 import android.os.CancellationSignal;
+import android.support.annotation.VisibleForTesting;
 import android.widget.ImageView;
 import android.widget.TextView;
 
-import com.google.common.annotations.VisibleForTesting;
 
 /**
  * Small helper class to manage text/icon around fingerprint authentication UI.

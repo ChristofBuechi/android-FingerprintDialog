@@ -111,6 +111,7 @@ public class MainActivity extends Activity {
         purchaseButton.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
+                Log.d("click", "clicked");
                 findViewById(R.id.confirmation_message).setVisibility(View.GONE);
                 findViewById(R.id.encrypted_message).setVisibility(View.GONE);
 

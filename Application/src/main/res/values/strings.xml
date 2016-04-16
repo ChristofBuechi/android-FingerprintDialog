@@ -35,4 +35,6 @@
     <string name="use_fingerprint_in_future">Use fingerprint in the future</string>
     <string name="use_fingerprint_to_authenticate_title">Use fingerprint to authenticate</string>
     <string name="use_fingerprint_to_authenticate_key" >use_fingerprint_to_authenticate_key</string>
+    <string name="encrypt">encrypt</string>
+    <string name="decrypt">decrypt</string>
 </resources>
