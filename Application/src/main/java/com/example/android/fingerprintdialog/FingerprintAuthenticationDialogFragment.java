@@ -54,11 +54,10 @@ public class FingerprintAuthenticationDialogFragment extends DialogFragment
 
     private FingerprintManager.CryptoObject mCryptoObject;
     private FingerprintUiHelper mFingerprintUiHelper;
-    private MainActivity mActivity;
 
-     FingerprintUiHelper.FingerprintUiHelperBuilder mFingerprintUiHelperBuilder;
-     InputMethodManager mInputMethodManager;
-     SharedPreferences mSharedPreferences;
+    private MainActivity mActivity;
+    InputMethodManager mInputMethodManager;
+    SharedPreferences mSharedPreferences;
     private FingerprintManager fingerprintManager;
 
 

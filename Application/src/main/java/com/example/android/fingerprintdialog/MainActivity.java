@@ -18,20 +18,20 @@ package com.example.android.fingerprintdialog;
 
 import android.app.Activity;
 import android.app.KeyguardManager;
-import android.content.Intent;
 import android.content.SharedPreferences;
 import android.hardware.fingerprint.FingerprintManager;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.preference.PreferenceManager;
 import android.security.keystore.KeyGenParameterSpec;
 import android.security.keystore.KeyPermanentlyInvalidatedException;
 import android.security.keystore.KeyProperties;
 import android.util.Base64;
 import android.util.Log;
-import android.view.Menu;
-import android.view.MenuItem;
 import android.view.View;
 import android.widget.Button;
+import android.widget.EditText;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -41,7 +41,6 @@ import java.security.InvalidKeyException;
 import java.security.KeyStore;
 import java.security.KeyStoreException;
 import java.security.NoSuchAlgorithmException;
-import java.security.NoSuchProviderException;
 import java.security.UnrecoverableKeyException;
 import java.security.cert.CertificateException;
 
@@ -51,6 +50,7 @@ import javax.crypto.IllegalBlockSizeException;
 import javax.crypto.KeyGenerator;
 import javax.crypto.NoSuchPaddingException;
 import javax.crypto.SecretKey;
+import javax.crypto.spec.IvParameterSpec;
 
 /**
  * Main entry point for the sample, showing a backpack and "Purchase" button.
@@ -69,8 +69,14 @@ public class MainActivity extends Activity {
      FingerprintAuthenticationDialogFragment fingerprintAuthenticationDialogFragment;
      KeyStore mKeyStore;
      KeyGenerator mKeyGenerator;
-     Cipher mCipher;
+     Cipher mEnCipher;
+     Cipher mDeCipher;
      SharedPreferences mSharedPreferences;
+    private boolean encryptedMode;
+    private EditText encrypt_text;
+    private EditText decrypt_text;
+    private Handler handler;
+    private byte[] array;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -79,49 +85,66 @@ public class MainActivity extends Activity {
         setContentView(R.layout.activity_main);
         mKeyguardManager = getSystemService(KeyguardManager.class);
         mFingerprintManager = getSystemService(FingerprintManager.class);
-        mKeyStore = providesKeystore();
+        KeyStore result = null;
+        try {
+            result = KeyStore.getInstance("AndroidKeyStore");
+        } catch (KeyStoreException e) {
+            e.printStackTrace();
+        }
+        mKeyStore = result;
+        loadKeyStore(mKeyStore);
         mKeyGenerator = providesKeyGenerator();
-        mCipher = providesCipher(mKeyStore);
+        mEnCipher = providesCipher();
+        mDeCipher = providesCipher();
         mSharedPreferences = PreferenceManager.getDefaultSharedPreferences(this);
         fingerprintAuthenticationDialogFragment = new FingerprintAuthenticationDialogFragment();
         fingerprintAuthenticationDialogFragment.setFingerprintManager(mFingerprintManager);
+        handler = new Handler(Looper.getMainLooper());
 
-        Button purchaseButton = (Button) findViewById(R.id.purchase_button);
+        Button encryptButton = (Button) findViewById(R.id.encrypt_button);
+        Button decryptButton = (Button) findViewById(R.id.decrypt_button);
+        decrypt_text = (EditText) findViewById(R.id.decrypt_text);
+        encrypt_text = (EditText) findViewById(R.id.encrypt_text);
+
         if (!mKeyguardManager.isKeyguardSecure()) {
             // Show a message that the user hasn't set up a fingerprint or lock screen.
             Toast.makeText(this,
                     "Secure lock screen hasn't set up.\n"
                             + "Go to 'Settings -> Security -> Fingerprint' to set up a fingerprint",
                     Toast.LENGTH_LONG).show();
-            purchaseButton.setEnabled(false);
+            encryptButton.setEnabled(false);
+            decryptButton.setEnabled(false);
             return;
         }
 
         //noinspection ResourceType
         if (!mFingerprintManager.hasEnrolledFingerprints()) {
-            purchaseButton.setEnabled(false);
+            encryptButton.setEnabled(false);
+            decryptButton.setEnabled(false);
             // This happens when no fingerprints are registered.
             Toast.makeText(this,
                     "Go to 'Settings -> Security -> Fingerprint' and register at least one fingerprint",
                     Toast.LENGTH_LONG).show();
             return;
         }
-        createKey();
-        purchaseButton.setEnabled(true);
-        purchaseButton.setOnClickListener(new View.OnClickListener() {
+//        createKey();
+        encryptButton.setEnabled(true);
+        decryptButton.setEnabled(true);
+        encryptButton.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 Log.d("click", "clicked");
+                encryptedMode = true;
                 findViewById(R.id.confirmation_message).setVisibility(View.GONE);
                 findViewById(R.id.encrypted_message).setVisibility(View.GONE);
 
                 // Set up the crypto object for later. The object will be authenticated by use
                 // of the fingerprint.
-                if (initCipher()) {
+                if (initEncryptionCipher()) {
 
                     // Show the fingerprint dialog. The user has the option to use the fingerprint with
                     // crypto, or you can fall back to using a server-side verified password.
-                    fingerprintAuthenticationDialogFragment.setCryptoObject(new FingerprintManager.CryptoObject(mCipher));
+                    fingerprintAuthenticationDialogFragment.setCryptoObject(new FingerprintManager.CryptoObject(mEnCipher));
                     boolean useFingerprintPreference = mSharedPreferences
                             .getBoolean(getString(R.string.use_fingerprint_to_authenticate_key),
                                     true);
@@ -138,7 +161,45 @@ public class MainActivity extends Activity {
                     // enrolled. Thus show the dialog to authenticate with their password first
                     // and ask the user if they want to authenticate with fingerprints in the
                     // future
-                    fingerprintAuthenticationDialogFragment.setCryptoObject(new FingerprintManager.CryptoObject(mCipher));
+                    fingerprintAuthenticationDialogFragment.setCryptoObject(new FingerprintManager.CryptoObject(mEnCipher));
+                    fingerprintAuthenticationDialogFragment.setStage(
+                            FingerprintAuthenticationDialogFragment.Stage.NEW_FINGERPRINT_ENROLLED);
+                    fingerprintAuthenticationDialogFragment.show(getFragmentManager(), DIALOG_FRAGMENT_TAG);
+                }
+            }
+        });
+        decryptButton.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                Log.d("click", "clicked");
+                encryptedMode = false;
+                findViewById(R.id.confirmation_message).setVisibility(View.GONE);
+                findViewById(R.id.encrypted_message).setVisibility(View.GONE);
+
+                // Set up the crypto object for later. The object will be authenticated by use
+                // of the fingerprint.
+                if (initDecryptionCipher()) {
+
+                    // Show the fingerprint dialog. The user has the option to use the fingerprint with
+                    // crypto, or you can fall back to using a server-side verified password.
+                    fingerprintAuthenticationDialogFragment.setCryptoObject(new FingerprintManager.CryptoObject(mDeCipher));
+                    boolean useFingerprintPreference = mSharedPreferences
+                            .getBoolean(getString(R.string.use_fingerprint_to_authenticate_key),
+                                    true);
+                    if (useFingerprintPreference) {
+                        fingerprintAuthenticationDialogFragment.setStage(
+                                FingerprintAuthenticationDialogFragment.Stage.FINGERPRINT);
+                    } else {
+                        fingerprintAuthenticationDialogFragment.setStage(
+                                FingerprintAuthenticationDialogFragment.Stage.PASSWORD);
+                    }
+                    fingerprintAuthenticationDialogFragment.show(getFragmentManager(), DIALOG_FRAGMENT_TAG);
+                } else {
+                    // This happens if the lock screen has been disabled or or a fingerprint got
+                    // enrolled. Thus show the dialog to authenticate with their password first
+                    // and ask the user if they want to authenticate with fingerprints in the
+                    // future
+                    fingerprintAuthenticationDialogFragment.setCryptoObject(new FingerprintManager.CryptoObject(mDeCipher));
                     fingerprintAuthenticationDialogFragment.setStage(
                             FingerprintAuthenticationDialogFragment.Stage.NEW_FINGERPRINT_ENROLLED);
                     fingerprintAuthenticationDialogFragment.show(getFragmentManager(), DIALOG_FRAGMENT_TAG);
@@ -147,30 +208,15 @@ public class MainActivity extends Activity {
         });
     }
 
-    public Cipher providesCipher(KeyStore keyStore) {
+    private void loadKeyStore(KeyStore mKeyStore) {
         try {
-            return Cipher.getInstance(KeyProperties.KEY_ALGORITHM_AES + "/"
-                    + KeyProperties.BLOCK_MODE_CBC + "/"
-                    + KeyProperties.ENCRYPTION_PADDING_PKCS7);
-        } catch (NoSuchAlgorithmException | NoSuchPaddingException e) {
-            throw new RuntimeException("Failed to get an instance of Cipher", e);
-        }
-    }
-
-
-    public KeyGenerator providesKeyGenerator() {
-        try {
-            return KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore");
-        } catch (NoSuchAlgorithmException | NoSuchProviderException e) {
-            throw new RuntimeException("Failed to get an instance of KeyGenerator", e);
-        }
-    }
-
-    public KeyStore providesKeystore() {
-        try {
-            return KeyStore.getInstance("AndroidKeyStore");
-        } catch (KeyStoreException e) {
-            throw new RuntimeException("Failed to get an instance of KeyStore", e);
+            mKeyStore.load(null);
+        } catch (IOException e) {
+            e.printStackTrace();
+        } catch (NoSuchAlgorithmException e) {
+            e.printStackTrace();
+        } catch (CertificateException e) {
+            e.printStackTrace();
         }
     }
 
@@ -182,38 +228,100 @@ public class MainActivity extends Activity {
      * been disabled or reset after the key was generated, or if a fingerprint got enrolled after
      * the key was generated.
      */
-    private boolean initCipher() {
+    private boolean initEncryptionCipher() {
         try {
             mKeyStore.load(null);
-            SecretKey key = (SecretKey) mKeyStore.getKey(KEY_NAME, null);
-            mCipher.init(Cipher.ENCRYPT_MODE, key);
+
+            SecretKey secretKey = (SecretKey) mKeyStore.getKey(KEY_NAME, null);
+            mEnCipher.init(Cipher.ENCRYPT_MODE, secretKey);
+
             return true;
         } catch (KeyPermanentlyInvalidatedException e) {
             return false;
-        } catch (KeyStoreException | CertificateException | UnrecoverableKeyException | IOException
+        } catch (CertificateException | IOException
                 | NoSuchAlgorithmException | InvalidKeyException e) {
             throw new RuntimeException("Failed to init Cipher", e);
+        } catch (UnrecoverableKeyException e) {
+            e.printStackTrace();
+            return false;
+        } catch (KeyStoreException e) {
+            e.printStackTrace();
+            return false;
         }
     }
+
+    private boolean initDecryptionCipher() {
+        try {
+            mKeyStore.load(null);
+
+            SecretKey secretKey = (SecretKey) mKeyStore.getKey(KEY_NAME, null);
+            mDeCipher.init(Cipher.DECRYPT_MODE, secretKey, new IvParameterSpec(mEnCipher.getIV()));
+            return true;
+        } catch (KeyPermanentlyInvalidatedException e) {
+            return false;
+        } catch (CertificateException | IOException
+                | NoSuchAlgorithmException | InvalidKeyException e) {
+            throw new RuntimeException("Failed to init Cipher", e);
+        } catch (UnrecoverableKeyException e) {
+            e.printStackTrace();
+            return false;
+        } catch (KeyStoreException e) {
+            e.printStackTrace();
+            return false;
+        } catch (InvalidAlgorithmParameterException e) {
+            e.printStackTrace();
+            return false;
+        }
+    }
+
 
     public void onPurchased(boolean withFingerprint) {
         if (withFingerprint) {
             // If the user has authenticated with fingerprint, verify that using cryptography and
             // then show the confirmation message.
-            tryEncrypt();
+            if (encryptedMode) {
+                tryEncrypt();
+            } else {
+                tryDecrypt();
+            }
         } else {
             // Authentication happened with backup password. Just show the confirmation message.
-            showConfirmation(null);
+            showEncryptedConfirmation(null);
         }
     }
 
     // Show confirmation, if fingerprint was used show crypto information.
-    private void showConfirmation(byte[] encrypted) {
+    private void showEncryptedConfirmation(byte[] encrypted) {
         findViewById(R.id.confirmation_message).setVisibility(View.VISIBLE);
         if (encrypted != null) {
             TextView v = (TextView) findViewById(R.id.encrypted_message);
             v.setVisibility(View.VISIBLE);
             v.setText(Base64.encodeToString(encrypted, 0 /* flags */));
+            decrypt_text.setText(Base64.encodeToString(encrypted, 0 /* flags */));
+            handler.postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    encrypt_text.setText("");
+                }
+            },  1000);
+
+        }
+    }
+
+    // Show confirmation, if fingerprint was used show crypto information.
+    private void showDecryptedConfirmation(byte[] decrypted) {
+        findViewById(R.id.confirmation_message).setVisibility(View.VISIBLE);
+        if (decrypted != null) {
+            TextView v = (TextView) findViewById(R.id.encrypted_message);
+            v.setVisibility(View.VISIBLE);
+            v.setText(Base64.encodeToString(decrypted, 0 /* flags */));
+            encrypt_text.setText(Base64.encodeToString(decrypted, 0 /* flags */));
+            handler.postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    decrypt_text.setText("");
+                }
+            },  1000);
         }
     }
 
@@ -223,13 +331,27 @@ public class MainActivity extends Activity {
      */
     private void tryEncrypt() {
         try {
-            byte[] encrypted = mCipher.doFinal(SECRET_MESSAGE.getBytes());
-            showConfirmation(encrypted);
+            byte[] encrypted = mEnCipher.doFinal(encrypt_text.getText().toString().getBytes());
+//            byte[] encrypted = mEnCipher.doFinal(array);
+            showEncryptedConfirmation(encrypted);
         } catch (BadPaddingException | IllegalBlockSizeException e) {
             Toast.makeText(this, "Failed to encrypt the data with the generated key. "
                     + "Retry the purchase", Toast.LENGTH_LONG).show();
             Log.e(TAG, "Failed to encrypt the data with the generated key." + e.getMessage());
         }
+    }
+
+    private void tryDecrypt() {
+        try {
+            byte[] decrypted = mDeCipher.doFinal(decrypt_text.getText().toString().getBytes());
+//            byte[] decrypted = mDeCipher.doFinal(array);
+            showDecryptedConfirmation(decrypted);
+        } catch (BadPaddingException  e) {
+            Toast.makeText(this, "Failed to decrypt the data with the generated key - BadPaddingException", Toast.LENGTH_LONG).show();
+            Log.e(TAG, "Failed to decrypt the data with the generated key - BadPaddingException" + e.getMessage());
+        } catch (IllegalBlockSizeException e) {
+            Toast.makeText(this, "Failed to encrypt the data with the generated key - IllegalBlockSizeException ", Toast.LENGTH_LONG).show();
+            Log.e(TAG, "Failed to encrypt the data with the generated key - IllegalBlockSizeException" + e.getMessage());        }
     }
 
     /**
@@ -241,9 +363,9 @@ public class MainActivity extends Activity {
         // for your flow. Use of keys is necessary if you need to know if the set of
         // enrolled fingerprints has changed.
         try {
-            mKeyStore.load(null);
             // Set the alias of the entry in Android KeyStore where the key will appear
             // and the constrains (purposes) in the constructor of the Builder
+
             mKeyGenerator.init(new KeyGenParameterSpec.Builder(KEY_NAME,
                     KeyProperties.PURPOSE_ENCRYPT |
                             KeyProperties.PURPOSE_DECRYPT)
@@ -251,30 +373,42 @@ public class MainActivity extends Activity {
                             // Require the user to authenticate with a fingerprint to authorize every use
                             // of the key
                     .setUserAuthenticationRequired(true)
-                    .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_PKCS7)
+                    .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
                     .build());
+
+//            SecureRandom sr = SecureRandom.getInstance("SHA1PRNG");
+//            sr.setSeed("this is a key".getBytes());
+//            mKeyGenerator.init(128, sr); // 192 and 256 bits may not be available
+
             mKeyGenerator.generateKey();
-        } catch (NoSuchAlgorithmException | InvalidAlgorithmParameterException
-                | CertificateException | IOException e) {
-            throw new RuntimeException(e);
+        } catch (InvalidAlgorithmParameterException e) {
+            e.printStackTrace();
         }
     }
 
-    @Override
-    public boolean onCreateOptionsMenu(Menu menu) {
-        getMenuInflater().inflate(R.menu.menu_main, menu);
-        return true;
+    public Cipher providesCipher() {
+        try {
+            return Cipher.getInstance(KeyProperties.KEY_ALGORITHM_AES + "/"
+                    + KeyProperties.BLOCK_MODE_CBC + "/"
+                    + KeyProperties.ENCRYPTION_PADDING_NONE);
+        } catch (NoSuchAlgorithmException | NoSuchPaddingException e) {
+            throw new RuntimeException("Failed to get an instance of Cipher", e);
+        }
     }
 
-    @Override
-    public boolean onOptionsItemSelected(MenuItem item) {
-        int id = item.getItemId();
-
-        if (id == R.id.action_settings) {
-            Intent intent = new Intent(this, SettingsActivity.class);
-            startActivity(intent);
-            return true;
+    public Cipher providesCipherEasy() {
+        try {
+            return Cipher.getInstance(KeyProperties.KEY_ALGORITHM_AES);
+        } catch (NoSuchAlgorithmException | NoSuchPaddingException e) {
+            throw new RuntimeException("Failed to get an instance of Cipher", e);
         }
-        return super.onOptionsItemSelected(item);
+    }
+
+    public KeyGenerator providesKeyGenerator() {
+        try {
+            return KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES);
+        } catch (NoSuchAlgorithmException e) {
+            throw new RuntimeException("Failed to get an instance of KeyGenerator", e);
+        }
     }
 }
