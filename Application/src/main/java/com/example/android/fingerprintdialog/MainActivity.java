@@ -36,21 +36,28 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import java.io.IOException;
+import java.security.GeneralSecurityException;
 import java.security.InvalidAlgorithmParameterException;
-import java.security.InvalidKeyException;
+import java.security.Key;
+import java.security.KeyFactory;
+import java.security.KeyPairGenerator;
 import java.security.KeyStore;
 import java.security.KeyStoreException;
 import java.security.NoSuchAlgorithmException;
+import java.security.NoSuchProviderException;
+import java.security.PrivateKey;
+import java.security.PublicKey;
 import java.security.UnrecoverableKeyException;
+import java.security.cert.Certificate;
 import java.security.cert.CertificateException;
+import java.security.spec.KeySpec;
+import java.security.spec.X509EncodedKeySpec;
 
 import javax.crypto.BadPaddingException;
 import javax.crypto.Cipher;
 import javax.crypto.IllegalBlockSizeException;
 import javax.crypto.KeyGenerator;
 import javax.crypto.NoSuchPaddingException;
-import javax.crypto.SecretKey;
-import javax.crypto.spec.IvParameterSpec;
 
 /**
  * Main entry point for the sample, showing a backpack and "Purchase" button.
@@ -61,22 +68,24 @@ public class MainActivity extends Activity {
 
     private static final String DIALOG_FRAGMENT_TAG = "myFragment";
     private static final String SECRET_MESSAGE = "Very secret message";
-    /** Alias for our key in the Android Key Store */
-    private static final String KEY_NAME = "my_key";
+    /**
+     * Alias for our key in the Android Key Store
+     */
+    private static final String keyAlias = "my_key";
 
-     KeyguardManager mKeyguardManager;
-     FingerprintManager mFingerprintManager;
-     FingerprintAuthenticationDialogFragment fingerprintAuthenticationDialogFragment;
-     KeyStore mKeyStore;
-     KeyGenerator mKeyGenerator;
-     Cipher mEnCipher;
-     Cipher mDeCipher;
-     SharedPreferences mSharedPreferences;
+    KeyguardManager mKeyguardManager;
+    FingerprintManager mFingerprintManager;
+    FingerprintAuthenticationDialogFragment fingerprintAuthenticationDialogFragment;
+    KeyStore keyStore;
+    KeyPairGenerator keyGenerator;
+    Cipher mEnCipher;
+    Cipher mDeCipher;
+    SharedPreferences mSharedPreferences;
     private boolean encryptedMode;
     private EditText encrypt_text;
     private EditText decrypt_text;
     private Handler handler;
-    private byte[] array;
+    private KeyFactory keyFactory;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -85,17 +94,29 @@ public class MainActivity extends Activity {
         setContentView(R.layout.activity_main);
         mKeyguardManager = getSystemService(KeyguardManager.class);
         mFingerprintManager = getSystemService(FingerprintManager.class);
-        KeyStore result = null;
         try {
-            result = KeyStore.getInstance("AndroidKeyStore");
+            keyStore = KeyStore.getInstance("AndroidKeyStore");
+            keyStore.load(null);
+
+            keyGenerator = KeyPairGenerator.getInstance(KeyProperties.KEY_ALGORITHM_RSA, "AndroidKeyStore");
+
+            keyFactory = KeyFactory.getInstance("RSA");
+            mDeCipher = providesRSACipher();
+            mEnCipher = providesRSACipher();
+        } catch (NoSuchAlgorithmException e) {
+            e.printStackTrace();
         } catch (KeyStoreException e) {
             e.printStackTrace();
+        } catch (NoSuchProviderException e) {
+            e.printStackTrace();
+        } catch (CertificateException e) {
+            e.printStackTrace();
+        } catch (IOException e) {
+            e.printStackTrace();
+        } catch (GeneralSecurityException e) {
+            e.printStackTrace();
         }
-        mKeyStore = result;
-        loadKeyStore(mKeyStore);
-        mKeyGenerator = providesKeyGenerator();
-        mEnCipher = providesCipher();
-        mDeCipher = providesCipher();
+
         mSharedPreferences = PreferenceManager.getDefaultSharedPreferences(this);
         fingerprintAuthenticationDialogFragment = new FingerprintAuthenticationDialogFragment();
         fingerprintAuthenticationDialogFragment.setFingerprintManager(mFingerprintManager);
@@ -208,72 +229,76 @@ public class MainActivity extends Activity {
         });
     }
 
-    private void loadKeyStore(KeyStore mKeyStore) {
+    void prepareKeyStore() {
         try {
-            mKeyStore.load(null);
-        } catch (IOException e) {
-            e.printStackTrace();
-        } catch (NoSuchAlgorithmException e) {
-            e.printStackTrace();
-        } catch (CertificateException e) {
-            e.printStackTrace();
+            Key key = keyStore.getKey(keyAlias, null);
+            Certificate certificate = keyStore.getCertificate(keyAlias);
+            if (key != null && certificate != null) {
+                try {
+                    createCipher().init(Cipher.DECRYPT_MODE, key);
+
+                    // We have a keys in the store and they're still valid.
+                    return;
+                } catch (KeyPermanentlyInvalidatedException e) {
+                    Log.d(TAG, "Key invalidated.");
+                }
+            }
+
+
+            keyGenerator.initialize(new KeyGenParameterSpec.Builder(keyAlias,
+                    KeyProperties.PURPOSE_ENCRYPT | KeyProperties.PURPOSE_DECRYPT) //
+                    .setBlockModes(KeyProperties.BLOCK_MODE_ECB) //
+                    .setUserAuthenticationRequired(true) //
+                    .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_RSA_PKCS1) //
+                    .build());
+
+            keyGenerator.generateKeyPair();
+        } catch (GeneralSecurityException e) {
+            throw new RuntimeException(e);
         }
     }
 
     /**
-     * Initialize the {@link Cipher} instance with the created key in the {@link #createKey()}
-     * method.
-     *
-     * @return {@code true} if initialization is successful, {@code false} if the lock screen has
-     * been disabled or reset after the key was generated, or if a fingerprint got enrolled after
-     * the key was generated.
-     */
+         * Initialize the {@link Cipher} instance with the created key in the {@link #createKey()}
+         * method.
+         *
+         * @return {@code true} if initialization is successful, {@code false} if the lock screen has
+         * been disabled or reset after the key was generated, or if a fingerprint got enrolled after
+         * the key was generated.
+         */
     private boolean initEncryptionCipher() {
+        prepareKeyStore();
+
         try {
-            mKeyStore.load(null);
 
-            SecretKey secretKey = (SecretKey) mKeyStore.getKey(KEY_NAME, null);
-            mEnCipher.init(Cipher.ENCRYPT_MODE, secretKey);
-
+            mEnCipher.init(Cipher.ENCRYPT_MODE, getPublicKey());
             return true;
-        } catch (KeyPermanentlyInvalidatedException e) {
-            return false;
-        } catch (CertificateException | IOException
-                | NoSuchAlgorithmException | InvalidKeyException e) {
-            throw new RuntimeException("Failed to init Cipher", e);
-        } catch (UnrecoverableKeyException e) {
-            e.printStackTrace();
-            return false;
-        } catch (KeyStoreException e) {
-            e.printStackTrace();
+        } catch (GeneralSecurityException e) {
             return false;
         }
     }
 
     private boolean initDecryptionCipher() {
         try {
-            mKeyStore.load(null);
-
-            SecretKey secretKey = (SecretKey) mKeyStore.getKey(KEY_NAME, null);
-            mDeCipher.init(Cipher.DECRYPT_MODE, secretKey, new IvParameterSpec(mEnCipher.getIV()));
-            return true;
-        } catch (KeyPermanentlyInvalidatedException e) {
-            return false;
-        } catch (CertificateException | IOException
-                | NoSuchAlgorithmException | InvalidKeyException e) {
-            throw new RuntimeException("Failed to init Cipher", e);
+            Key key = keyStore.getKey(keyAlias, null);
+            Certificate certificate = keyStore.getCertificate(keyAlias);
+            if (key != null && certificate != null) {
+                try {
+                    mDeCipher.init(Cipher.DECRYPT_MODE, getPrivateKey());
+                    return true;
+                } catch (GeneralSecurityException e) {
+                    return false;
+                }
+            }
         } catch (UnrecoverableKeyException e) {
             e.printStackTrace();
-            return false;
+        } catch (NoSuchAlgorithmException e) {
+            e.printStackTrace();
         } catch (KeyStoreException e) {
             e.printStackTrace();
-            return false;
-        } catch (InvalidAlgorithmParameterException e) {
-            e.printStackTrace();
-            return false;
         }
+        return false;
     }
-
 
     public void onPurchased(boolean withFingerprint) {
         if (withFingerprint) {
@@ -303,7 +328,7 @@ public class MainActivity extends Activity {
                 public void run() {
                     encrypt_text.setText("");
                 }
-            },  1000);
+            }, 1000);
 
         }
     }
@@ -321,7 +346,7 @@ public class MainActivity extends Activity {
                 public void run() {
                     decrypt_text.setText("");
                 }
-            },  1000);
+            }, 1000);
         }
     }
 
@@ -332,7 +357,6 @@ public class MainActivity extends Activity {
     private void tryEncrypt() {
         try {
             byte[] encrypted = mEnCipher.doFinal(encrypt_text.getText().toString().getBytes());
-//            byte[] encrypted = mEnCipher.doFinal(array);
             showEncryptedConfirmation(encrypted);
         } catch (BadPaddingException | IllegalBlockSizeException e) {
             Toast.makeText(this, "Failed to encrypt the data with the generated key. "
@@ -344,14 +368,14 @@ public class MainActivity extends Activity {
     private void tryDecrypt() {
         try {
             byte[] decrypted = mDeCipher.doFinal(decrypt_text.getText().toString().getBytes());
-//            byte[] decrypted = mDeCipher.doFinal(array);
             showDecryptedConfirmation(decrypted);
-        } catch (BadPaddingException  e) {
+        } catch (BadPaddingException e) {
             Toast.makeText(this, "Failed to decrypt the data with the generated key - BadPaddingException", Toast.LENGTH_LONG).show();
             Log.e(TAG, "Failed to decrypt the data with the generated key - BadPaddingException" + e.getMessage());
         } catch (IllegalBlockSizeException e) {
             Toast.makeText(this, "Failed to encrypt the data with the generated key - IllegalBlockSizeException ", Toast.LENGTH_LONG).show();
-            Log.e(TAG, "Failed to encrypt the data with the generated key - IllegalBlockSizeException" + e.getMessage());        }
+            Log.e(TAG, "Failed to encrypt the data with the generated key - IllegalBlockSizeException" + e.getMessage());
+        }
     }
 
     /**
@@ -366,21 +390,29 @@ public class MainActivity extends Activity {
             // Set the alias of the entry in Android KeyStore where the key will appear
             // and the constrains (purposes) in the constructor of the Builder
 
-            mKeyGenerator.init(new KeyGenParameterSpec.Builder(KEY_NAME,
-                    KeyProperties.PURPOSE_ENCRYPT |
-                            KeyProperties.PURPOSE_DECRYPT)
-                    .setBlockModes(KeyProperties.BLOCK_MODE_CBC)
-                            // Require the user to authenticate with a fingerprint to authorize every use
-                            // of the key
-                    .setUserAuthenticationRequired(true)
-                    .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+            keyGenerator.initialize(new KeyGenParameterSpec.Builder(keyAlias,
+                    KeyProperties.PURPOSE_ENCRYPT | KeyProperties.PURPOSE_DECRYPT) //
+                    .setBlockModes(KeyProperties.BLOCK_MODE_ECB) //
+                    .setUserAuthenticationRequired(true) //
+                    .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_RSA_PKCS1) //
                     .build());
 
-//            SecureRandom sr = SecureRandom.getInstance("SHA1PRNG");
-//            sr.setSeed("this is a key".getBytes());
-//            mKeyGenerator.init(128, sr); // 192 and 256 bits may not be available
+            keyGenerator.generateKeyPair();
 
-            mKeyGenerator.generateKey();
+
+
+
+//            keyGenerator.init(new KeyGenParameterSpec.Builder(keyAlias,
+//                    KeyProperties.PURPOSE_ENCRYPT |
+//                            KeyProperties.PURPOSE_DECRYPT)
+//                    .setBlockModes(KeyProperties.BLOCK_MODE_CBC)
+//                    // Require the user to authenticate with a fingerprint to authorize every use
+//                    // of the key
+//                    .setUserAuthenticationRequired(true)
+//                    .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+//                    .build());
+
+//            keyGenerator.generateKey();
         } catch (InvalidAlgorithmParameterException e) {
             e.printStackTrace();
         }
@@ -394,6 +426,14 @@ public class MainActivity extends Activity {
         } catch (NoSuchAlgorithmException | NoSuchPaddingException e) {
             throw new RuntimeException("Failed to get an instance of Cipher", e);
         }
+    }
+
+    public Cipher providesRSACipher() throws GeneralSecurityException {
+        return Cipher.getInstance(KeyProperties.KEY_ALGORITHM_RSA
+                + "/"
+                + KeyProperties.BLOCK_MODE_ECB
+                + "/"
+                + KeyProperties.ENCRYPTION_PADDING_RSA_PKCS1);
     }
 
     public Cipher providesCipherEasy() {
@@ -410,5 +450,34 @@ public class MainActivity extends Activity {
         } catch (NoSuchAlgorithmException e) {
             throw new RuntimeException("Failed to get an instance of KeyGenerator", e);
         }
+    }
+
+    static Cipher createCipher() throws GeneralSecurityException {
+        return Cipher.getInstance(KeyProperties.KEY_ALGORITHM_RSA
+                + "/"
+                + KeyProperties.BLOCK_MODE_ECB
+                + "/"
+                + KeyProperties.ENCRYPTION_PADDING_RSA_PKCS1);
+    }
+
+    private PublicKey getPublicKey() throws GeneralSecurityException {
+        PublicKey publicKey = keyStore.getCertificate(keyAlias).getPublicKey();
+
+        // In contradiction to the documentation, the public key returned from the key store is only
+        // unlocked after the user has authenticated with their fingerprint. This is unnecessary
+        // (and broken) for encryption using asynchronous keys, so we work around this by re-creating
+        // our own copy of the key. See known issues at
+        // http://developer.android.com/reference/android/security/keystore/KeyGenParameterSpec.html
+        KeySpec spec = new X509EncodedKeySpec(publicKey.getEncoded());
+        return keyFactory.generatePublic(spec);
+    }
+
+    PrivateKey getPrivateKey() throws GeneralSecurityException {
+        return (PrivateKey) keyStore.getKey(keyAlias, null);
+    }
+
+    public int checkSelfPermission(String permission) {
+        return this.checkPermission(permission, android.os.Process.myPid(),
+                android.os.Process.myUid());
     }
 }
